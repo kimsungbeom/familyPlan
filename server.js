@@ -1,12 +1,13 @@
 const express = require('express');
 const session = require('express-session');
+const MemoryStore = require('memorystore')(session);
 const { v4: uuidv4 } = require('uuid');
 const bcrypt = require('bcryptjs');
 const fs = require('fs');
 const path = require('path');
 
 const app = express();
-const PORT = 3000;
+const PORT = process.env.PORT || 3000;
 
 const DATA_DIR = path.join(__dirname, 'data');
 const USERS_FILE = path.join(DATA_DIR, 'users.json');
@@ -25,12 +26,17 @@ app.use(session({
   secret: 'familyplan-secret-key-2026',
   resave: false,
   saveUninitialized: false,
+  store: new MemoryStore({ checkPeriod: 86400000 }),
   cookie: { maxAge: 1000 * 60 * 60 * 24 }
 }));
 
 function readJSON(filePath) {
   try {
-    if (!fs.existsSync(filePath)) return [];
+    if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
+    if (!fs.existsSync(filePath)) {
+      fs.writeFileSync(filePath, '[]', 'utf-8');
+      return [];
+    }
     const data = fs.readFileSync(filePath, 'utf-8');
     return JSON.parse(data);
   } catch { return []; }

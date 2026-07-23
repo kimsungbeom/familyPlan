@@ -11,10 +11,14 @@
   "author": "",
   "license": "ISC",
   "type": "commonjs",
+  "engines": {
+    "node": ">=18"
+  },
   "dependencies": {
     "bcryptjs": "^3.0.3",
     "express": "^5.2.1",
     "express-session": "^1.19.0",
+    "memorystore": "^1.6.8",
     "uuid": "^14.0.1"
   }
 }
