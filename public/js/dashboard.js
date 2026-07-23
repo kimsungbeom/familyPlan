@@ -20,6 +20,9 @@
   const recurEndGroup = document.getElementById('recurEndGroup');
 
   let currentUserId = '';
+  let backupTimer = null;
+  let autoBackupEnabled = true;
+  let currentFamilyId = '';
 
   async function init() {
     const me = await api('/api/me');
@@ -44,6 +47,7 @@
 
     const famData = await api('/api/family/members');
     members = famData.members || [];
+    currentFamilyId = famData.familyId || '';
     document.getElementById('joinKeyDisplay').textContent = famData.joinKey || '----';
     renderFamilyPanel(famData, currentUserId);
 
@@ -66,6 +70,8 @@
     });
 
     await loadAll();
+    checkLocalBackup();
+    startAutoBackup();
 
     document.getElementById('viewTabs').addEventListener('click', e => {
       const btn = e.target.closest('button[data-view]');
@@ -359,9 +365,21 @@
               tooltip: { enabled: false }
             },
             events: []
-          }
-        });
       }
+    });
+
+    document.getElementById('restoreFromLocalBtn').addEventListener('click', async () => {
+      const backup = loadLocalBackup();
+      if (backup) {
+        await restoreFromBackup(backup);
+        document.getElementById('restoreBanner').style.display = 'none';
+      }
+    });
+
+    document.getElementById('dismissRestoreBtn').addEventListener('click', () => {
+      document.getElementById('restoreBanner').style.display = 'none';
+    });
+  }
     });
   }
 
@@ -619,7 +637,12 @@
     const exportBtn = document.getElementById('exportBtn');
     const importFile = document.getElementById('importFile');
     const resetBtn = document.getElementById('resetBtn');
+    const restoreLocalSettingsBtn = document.getElementById('restoreLocalSettingsBtn');
+    const autoBackupToggle = document.getElementById('autoBackupToggle');
+    const backupInfo = document.getElementById('backupInfo');
     const dataMsg = document.getElementById('dataMsg');
+
+    updateBackupInfo();
 
     exportBtn?.addEventListener('click', async () => {
       const res = await fetch('/api/schedules/export');
@@ -658,6 +681,29 @@
       loadAll();
     });
 
+    restoreLocalSettingsBtn?.addEventListener('click', async () => {
+      const backup = loadLocalBackup();
+      if (!backup) {
+        dataMsg.style.display = 'block';
+        dataMsg.style.color = 'var(--color-danger)';
+        dataMsg.textContent = '로컬 백업이 없습니다.';
+        setTimeout(() => { dataMsg.style.display = 'none'; }, 3000);
+        return;
+      }
+      await restoreFromBackup(backup, dataMsg);
+    });
+
+    autoBackupToggle?.addEventListener('change', () => {
+      autoBackupEnabled = autoBackupToggle.checked;
+      if (autoBackupEnabled) {
+        startAutoBackup();
+      } else if (backupTimer) {
+        clearInterval(backupTimer);
+        backupTimer = null;
+      }
+      localStorage.setItem('fp_autobackup', autoBackupEnabled ? '1' : '0');
+    });
+
     resetBtn?.addEventListener('click', async () => {
       if (!confirm('그룹의 모든 일정 데이터가 삭제됩니다. 정말 초기화하시겠습니까?')) return;
       const res = await api('/api/schedules/reset', { method: 'POST' });
@@ -672,6 +718,96 @@
       }
       setTimeout(() => { dataMsg.style.display = 'none'; }, 3000);
     });
+  }
+
+  function getBackupKey() {
+    return 'fp_backup_' + currentFamilyId;
+  }
+
+  function loadLocalBackup() {
+    try {
+      const raw = localStorage.getItem(getBackupKey());
+      return raw ? JSON.parse(raw) : null;
+    } catch { return null; }
+  }
+
+  function saveLocalBackup(schedules) {
+    try {
+      const backup = {
+        updatedAt: new Date().toISOString(),
+        familyId: currentFamilyId,
+        count: schedules.length,
+        schedules
+      };
+      localStorage.setItem(getBackupKey(), JSON.stringify(backup));
+      updateBackupInfo();
+    } catch { /* localStorage full */ }
+  }
+
+  function updateBackupInfo() {
+    const el = document.getElementById('backupInfo');
+    if (!el) return;
+    const backup = loadLocalBackup();
+    if (backup && backup.updatedAt) {
+      const d = new Date(backup.updatedAt);
+      const ago = Math.floor((Date.now() - d.getTime()) / 60000);
+      const timeStr = ago < 1 ? '방금 전' : ago < 60 ? `${ago}분 전` : `${Math.floor(ago/60)}시간 전`;
+      el.textContent = `로컬 백업: ${timeStr} (${backup.count}건)`;
+    } else {
+      el.textContent = '로컬 백업 없음';
+    }
+  }
+
+  function checkLocalBackup() {
+    if (allSchedules.length > 0) {
+      document.getElementById('restoreBanner').style.display = 'none';
+      return;
+    }
+    const backup = loadLocalBackup();
+    if (backup && backup.schedules && backup.schedules.length > 0) {
+      document.getElementById('restoreBanner').style.display = 'block';
+    }
+  }
+
+  async function startAutoBackup() {
+    autoBackupEnabled = localStorage.getItem('fp_autobackup') !== '0';
+    document.getElementById('autoBackupToggle').checked = autoBackupEnabled;
+    if (backupTimer) clearInterval(backupTimer);
+    if (!autoBackupEnabled) return;
+    doBackup();
+    backupTimer = setInterval(doBackup, 5 * 60 * 1000);
+  }
+
+  async function doBackup() {
+    if (!autoBackupEnabled) return;
+    try {
+      const res = await fetch('/api/schedules/search');
+      const data = await res.json();
+      if (data.schedules) {
+        saveLocalBackup(data.schedules);
+      }
+    } catch { /* network error, skip */ }
+  }
+
+  async function restoreFromBackup(backup, dataMsg) {
+    if (!backup || !backup.schedules || backup.schedules.length === 0) return;
+    try {
+      const res = await api('/api/schedules/import', { method: 'POST', body: { schedules: backup.schedules } });
+      if (dataMsg) {
+        dataMsg.style.display = 'block';
+        dataMsg.style.color = res.error ? 'var(--color-danger)' : 'var(--color-accent)';
+        dataMsg.textContent = res.error || res.message;
+        setTimeout(() => { dataMsg.style.display = 'none'; }, 3000);
+      }
+      if (!res.error) loadAll();
+    } catch {
+      if (dataMsg) {
+        dataMsg.style.display = 'block';
+        dataMsg.style.color = 'var(--color-danger)';
+        dataMsg.textContent = '복원에 실패했습니다.';
+        setTimeout(() => { dataMsg.style.display = 'none'; }, 3000);
+      }
+    }
   }
 
   init();

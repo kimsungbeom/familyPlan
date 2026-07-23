@@ -19,6 +19,12 @@
     </div>
   </div>
 
+  <div class="success-msg" id="restoreBanner" style="display:none;margin-bottom:12px;">
+    데이터가 초기화되었습니다.
+    <button class="btn btn-primary btn-sm" id="restoreFromLocalBtn" style="margin-left:8px">로컬 백업에서 복원</button>
+    <button class="btn btn-outline btn-sm" id="dismissRestoreBtn" style="margin-left:4px">닫기</button>
+  </div>
+
   <div class="family-panel" id="familyPanel" style="display:none">
     <div style="display:flex;justify-content:space-between;align-items:center">
       <h3 id="familyPanelTitle">가족 구성원 관리</h3>
@@ -173,7 +179,14 @@
         <button type="button" class="btn btn-outline btn-sm" id="exportBtn">내보내기</button>
         <label class="btn btn-outline btn-sm" for="importFile" style="cursor:pointer">불러오기</label>
         <input type="file" id="importFile" accept=".json" style="display:none">
+        <button type="button" class="btn btn-outline btn-sm" id="restoreLocalSettingsBtn">로컬 복원</button>
         <button type="button" class="btn btn-danger btn-sm" id="resetBtn">전체 초기화</button>
+      </div>
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-top:8px">
+        <span style="font-size:var(--font-size-xs);color:var(--color-text-secondary)" id="backupInfo"></span>
+        <label style="font-size:var(--font-size-xs);color:var(--color-text-secondary);display:flex;align-items:center;gap:4px;cursor:pointer">
+          <input type="checkbox" id="autoBackupToggle" checked> 자동 백업
+        </label>
       </div>
       <div id="dataMsg" style="font-size:var(--font-size-xs);margin-top:6px;display:none"></div>
     </div>
