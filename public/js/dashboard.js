@@ -299,10 +299,13 @@
     scheduleListEl.querySelectorAll('.progress-bar input[type="range"]').forEach(r => {
       r.addEventListener('change', async () => {
         const id = r.dataset.id;
-        await api(`/api/schedules/${id}`, { method: 'PUT', body: { progress: parseInt(r.value) } });
+        const val = parseInt(r.value);
+        const body = { progress: val };
+        if (val >= 100) body.completed = true;
+        await api(`/api/schedules/${id}`, { method: 'PUT', body });
         const pct = r.parentElement.querySelector('.pct');
-        if (pct) pct.textContent = r.value + '%';
-        loadProgressStats();
+        if (pct) pct.textContent = val + '%';
+        if (val >= 100) loadAll(); else loadProgressStats();
       });
     });
 
@@ -340,20 +343,20 @@
       card.innerHTML = `
         <div class="name">${s.name}</div>
         <div class="progress-circle"><canvas id="chart-${s.userId}"></canvas></div>
-        <div class="details">완료 ${s.completed}/${s.total}건</div>`;
+        <div class="details">진행률 ${s.averageProgress}%</div>`;
       progressSection.appendChild(card);
 
       const ctx = document.getElementById(`chart-${s.userId}`);
       if (ctx) {
-        const done = s.completed || 0;
-        const remain = Math.max(0, s.total - done);
+        const pct = s.averageProgress || 0;
+        const remain = 100 - pct;
         chartInstances[s.userId] = new Chart(ctx, {
           type: 'doughnut',
           data: {
-            labels: ['완료', '진행중'],
+            labels: ['진행', '남음'],
             datasets: [{
-              data: [done, remain],
-              backgroundColor: ['#03c75a', '#e0e0e0'],
+              data: [pct, Math.max(0, remain)],
+              backgroundColor: [accentColor(), '#e0e0e0'],
               borderWidth: 0,
               borderRadius: 2
             }]
@@ -556,6 +559,10 @@
         loadAll();
       });
     });
+  }
+
+  function accentColor() {
+    return getComputedStyle(document.documentElement).getPropertyValue('--color-accent').trim() || '#03c75a';
   }
 
   function debounce(fn, ms) {
