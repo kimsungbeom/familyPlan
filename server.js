@@ -16,12 +16,24 @@ const SCHEDULES_FILE = path.join(DATA_DIR, 'schedules.json');
 
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
-app.get('/', (req, res) => res.sendFile(path.join(__dirname, 'public', 'index.html')));
-app.get('/signup', (req, res) => res.sendFile(path.join(__dirname, 'public', 'signup.html')));
-app.get('/dashboard', (req, res) => res.sendFile(path.join(__dirname, 'public', 'dashboard.html')));
-app.get('/mypage', (req, res) => res.sendFile(path.join(__dirname, 'public', 'mypage.html')));
 
-app.use(express.static(path.join(__dirname, 'public')));
+const pageRoutes = {
+  '/': 'index.html',
+  '/signup': 'signup.html',
+  '/dashboard': 'dashboard.html',
+  '/mypage': 'mypage.html'
+};
+
+Object.entries(pageRoutes).forEach(([route, file]) => {
+  app.get(route, (req, res) => {
+    res.sendFile(path.join(__dirname, 'public', file));
+  });
+  app.get(route + '.html', (req, res) => {
+    res.sendFile(path.join(__dirname, 'public', file));
+  });
+});
+
+app.use(express.static(path.join(__dirname, 'public'), { index: false }));
 app.use(session({
   secret: 'familyplan-secret-key-2026',
   resave: false,
@@ -588,8 +600,17 @@ app.get('/api/stats/progress', requireAuth, (req, res) => {
 });
 
 app.use((req, res) => {
+  const pageRoute = pageRoutes[req.path];
+  if (pageRoute) {
+    return res.sendFile(path.join(__dirname, 'public', pageRoute));
+  }
   if (req.path === '/') return;
   res.redirect('/');
+});
+
+app.use((err, req, res, next) => {
+  console.error('Server error:', err);
+  res.status(500).json({ error: 'Internal server error' });
 });
 
 app.listen(PORT, () => {
