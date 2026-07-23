@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>FAMILY PLAN - 회원가입</title>
+<link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+<div class="auth-container">
+  <h2>회원가입</h2>
+  <div id="errorMsg" class="error-msg"></div>
+  <div id="successMsg" class="success-msg"></div>
+  <form id="signupForm">
+    <div class="form-group">
+      <label for="signupId">아이디</label>
+      <input type="text" id="signupId" placeholder="사용할 아이디를 입력하세요" required>
+    </div>
+    <div class="form-group">
+      <label for="signupPass">비밀번호</label>
+      <input type="password" id="signupPass" placeholder="비밀번호를 입력하세요" required>
+    </div>
+    <div class="form-group">
+      <label for="signupName">이름</label>
+      <input type="text" id="signupName" placeholder="이름을 입력하세요" required>
+    </div>
+    <div class="form-group">
+      <label>가입 방식</label>
+      <div class="view-tabs" id="modeTabs" style="margin-bottom:8px">
+        <button type="button" data-mode="create" class="active">그룹 생성 (4자리 키)</button>
+        <button type="button" data-mode="join">그룹 참여 (4자리 키)</button>
+      </div>
+    </div>
+    <div class="form-group">
+      <label for="keyInput" id="keyLabel">그룹 키 (4자리)</label>
+      <input type="text" id="keyInput" placeholder="그룹 키 4자리를 입력하세요" maxlength="4" required autofocus>
+      <div class="hint" id="keyHint">가족 일정 관리의 시작 키입니다. 다른 가족원과 공유하세요.</div>
+    </div>
+    <button type="submit" class="btn btn-primary" style="width:100%">회원가입</button>
+  </form>
+  <div class="toggle-link">
+    이미 계정이 있으신가요? <a href="/">로그인</a>
+  </div>
+</div>
+<script src="/js/app.js"></script>
+<script src="/js/auth.js"></script>
+</body>
+</html>

@@ -1,0 +1,186 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>FAMILY PLAN - 대시보드</title>
+<link rel="stylesheet" href="/css/style.css">
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+</head>
+<body>
+<div id="header"></div>
+<div class="container">
+  <div class="alert-area" id="alertArea">
+    <div class="alert-badge" id="todayBadge">
+      <span class="count" id="todayCount">0</span> 오늘의 일정
+    </div>
+    <div class="alert-badge" id="weekBadge">
+      <span class="count" id="weekCount">0</span> 이번주 일정
+    </div>
+  </div>
+
+  <div class="family-panel" id="familyPanel" style="display:none">
+    <div style="display:flex;justify-content:space-between;align-items:center">
+      <h3 id="familyPanelTitle">가족 구성원 관리</h3>
+      <button class="btn btn-outline btn-sm" id="settingsBtn" style="display:none">그룹 설정</button>
+    </div>
+    <div class="member-list" id="memberList"></div>
+    <div style="margin-top:8px;font-size:var(--font-size-xs);color:var(--color-text-secondary)">
+      참여 키: <strong id="joinKeyDisplay">----</strong> (가족원 초대 시 공유)
+    </div>
+    <div style="margin-top:8px">
+      <button class="btn btn-outline btn-sm" id="toggleFamilyBtn">접기</button>
+    </div>
+  </div>
+
+  <div class="progress-section" id="progressSection"></div>
+
+  <div class="view-tabs" id="viewTabs">
+    <button data-view="day" class="active">일</button>
+    <button data-view="week">주</button>
+    <button data-view="month">월</button>
+    <button data-view="year">년</button>
+  </div>
+
+  <div class="search-bar">
+    <input type="text" id="searchInput" placeholder="일정 검색 (제목, 요청자, 소요시간)">
+    <select id="filterUser">
+      <option value="">전체 대상자</option>
+    </select>
+    <select id="filterStatus">
+      <option value="">전체 상태</option>
+      <option value="completed">완료</option>
+      <option value="pending">미완료</option>
+    </select>
+    <input type="date" id="filterDateFrom" title="시작일">
+    <input type="date" id="filterDateTo" title="종료일">
+  </div>
+
+  <div class="calendar-nav" id="calendarNav">
+    <button id="prevBtn">&lt;</button>
+    <span class="current-label" id="currentLabel"></span>
+    <button id="nextBtn">&gt;</button>
+  </div>
+
+  <div id="calendarContainer"></div>
+
+  <div class="schedule-list" id="scheduleList"></div>
+  <div class="empty-state" id="emptyState" style="display:none">
+    <p>등록된 일정이 없습니다.</p>
+    <p style="font-size:var(--font-size-sm)">[+ 일정 추가] 버튼을 눌러 첫 일정을 만들어보세요.</p>
+  </div>
+
+  <div style="text-align:center;margin-top:16px;padding-bottom:40px">
+    <button class="btn btn-primary" id="addScheduleBtn">+ 일정 추가</button>
+  </div>
+</div>
+
+<div class="modal-overlay" id="scheduleModal" style="display:none">
+  <div class="modal">
+    <h3 id="modalTitle">일정 추가</h3>
+    <form id="scheduleForm">
+      <input type="hidden" id="editScheduleId">
+      <div class="form-row">
+        <div class="form-group">
+          <label for="schedTitle">일정명</label>
+          <input type="text" id="schedTitle" placeholder="일정명을 입력하세요" required>
+        </div>
+        <div class="form-group">
+          <label for="schedTarget">대상자</label>
+          <select id="schedTarget" required></select>
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label for="schedRequester">요청자</label>
+          <input type="text" id="schedRequester" placeholder="요청자 이름">
+        </div>
+        <div class="form-group">
+          <label for="schedDuration">소요시간</label>
+          <input type="text" id="schedDuration" placeholder="예: 2시간, 30분">
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label for="schedDate">날짜</label>
+          <input type="date" id="schedDate" required>
+        </div>
+        <div class="form-group">
+          <label for="schedTime">시간</label>
+          <input type="time" id="schedTime">
+        </div>
+      </div>
+      <div class="form-group">
+        <label>진행률</label>
+        <div class="slider-group">
+          <input type="range" id="schedProgress" min="0" max="100" value="0">
+          <span class="slider-val" id="schedProgressVal">0%</span>
+        </div>
+      </div>
+      <div class="form-group">
+        <label>
+          <input type="checkbox" id="schedCompleted"> 완료
+        </label>
+      </div>
+      <div class="form-group">
+        <label>반복 일정</label>
+        <select id="schedRecurring">
+          <option value="">없음</option>
+          <option value="daily">매일</option>
+          <option value="weekly">매주</option>
+          <option value="monthly">매월</option>
+          <option value="yearly">매년</option>
+        </select>
+      </div>
+      <div class="form-group" id="recurEndGroup" style="display:none">
+        <label for="schedRecurEnd">반복 종료일</label>
+        <input type="date" id="schedRecurEnd">
+      </div>
+      <div class="modal-actions">
+        <button type="button" class="btn btn-outline" id="modalCancelBtn">취소</button>
+        <button type="submit" class="btn btn-primary">저장</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<div class="modal-overlay" id="settingsModal" style="display:none">
+  <div class="modal">
+    <h3>그룹 설정</h3>
+    <form id="settingsForm">
+      <div class="form-group">
+        <label for="settingsGroupName">그룹명</label>
+        <input type="text" id="settingsGroupName" placeholder="가족 그룹 이름 (예: 김씨 가족)" maxlength="30">
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label for="settingsAccent">강조색</label>
+          <input type="color" id="settingsAccent" value="#03c75a">
+        </div>
+        <div class="form-group">
+          <label for="settingsBgColor">배경색</label>
+          <input type="color" id="settingsBgColor" value="#f6f6f7">
+        </div>
+      </div>
+      <div class="modal-actions">
+        <button type="button" class="btn btn-outline" id="settingsCancelBtn">취소</button>
+        <button type="submit" class="btn btn-primary">저장</button>
+      </div>
+    </form>
+    <div style="margin-top:24px;padding-top:16px;border-top:1px solid var(--color-border-muted)">
+      <h4 style="font-size:var(--font-size-lg);font-weight:700;margin-bottom:10px;color:var(--color-text-primary)">데이터 관리</h4>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <button type="button" class="btn btn-outline btn-sm" id="exportBtn">내보내기</button>
+        <label class="btn btn-outline btn-sm" for="importFile" style="cursor:pointer">불러오기</label>
+        <input type="file" id="importFile" accept=".json" style="display:none">
+        <button type="button" class="btn btn-danger btn-sm" id="resetBtn">전체 초기화</button>
+      </div>
+      <div id="dataMsg" style="font-size:var(--font-size-xs);margin-top:6px;display:none"></div>
+    </div>
+  </div>
+</div>
+
+<script src="/js/app.js"></script>
+<script src="/js/dashboard.js"></script>
+</body>
+</html>
