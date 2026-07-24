@@ -1,18 +1,16 @@
+require('dotenv').config();
 const express = require('express');
 const session = require('express-session');
 const MemoryStore = require('memorystore')(session);
 const { v4: uuidv4 } = require('uuid');
 const bcrypt = require('bcryptjs');
-const fs = require('fs');
 const path = require('path');
+const supabase = require('./db');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-const DATA_DIR = path.join(__dirname, 'data');
-const USERS_FILE = path.join(DATA_DIR, 'users.json');
-const FAMILIES_FILE = path.join(DATA_DIR, 'families.json');
-const SCHEDULES_FILE = path.join(DATA_DIR, 'schedules.json');
+app.set('trust proxy', 1);
 
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
@@ -42,22 +40,6 @@ app.use(session({
   cookie: { maxAge: 1000 * 60 * 60 * 24 }
 }));
 
-function readJSON(filePath) {
-  try {
-    if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
-    if (!fs.existsSync(filePath)) {
-      fs.writeFileSync(filePath, '[]', 'utf-8');
-      return [];
-    }
-    const data = fs.readFileSync(filePath, 'utf-8');
-    return JSON.parse(data);
-  } catch { return []; }
-}
-
-function writeJSON(filePath, data) {
-  fs.writeFileSync(filePath, JSON.stringify(data, null, 2), 'utf-8');
-}
-
 function generateJoinKey() {
   const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
   let key = '';
@@ -65,6 +47,26 @@ function generateJoinKey() {
     key += chars[Math.floor(Math.random() * chars.length)];
   }
   return key;
+}
+
+function mapSchedule(s) {
+  return {
+    scheduleId: s.schedule_id,
+    familyId: s.family_id,
+    title: s.title,
+    requester: s.requester,
+    targetUserId: s.target_user_id,
+    duration: s.duration,
+    date: s.scheduled_date,
+    time: s.scheduled_time,
+    progress: s.progress,
+    completed: s.completed,
+    isRecurring: s.is_recurring,
+    recurringType: s.recurring_type,
+    recurringEndDate: s.recurring_end_date,
+    createdBy: s.created_by,
+    createdAt: s.created_at
+  };
 }
 
 function requireAuth(req, res, next) {
@@ -76,7 +78,7 @@ function requireAuth(req, res, next) {
 
 // ─── AUTH ───────────────────────────────────────────
 
-app.post('/api/signup', (req, res) => {
+app.post('/api/signup', async (req, res) => {
   const { id, pass, name, mode, key } = req.body;
   if (!id || !pass || !name) {
     return res.status(400).json({ error: 'ID, 비밀번호, 이름을 모두 입력하세요.' });
@@ -85,61 +87,64 @@ app.post('/api/signup', (req, res) => {
     return res.status(400).json({ error: '4자리 키를 입력하세요.' });
   }
 
-  const users = readJSON(USERS_FILE);
-  const families = readJSON(FAMILIES_FILE);
-
-  if (users.find(u => u.id === id)) {
+  const { data: existingUser } = await supabase.from('users').select('id').eq('id', id).maybeSingle();
+  if (existingUser) {
     return res.status(409).json({ error: '이미 사용 중인 ID입니다.' });
   }
 
   const hashedPass = bcrypt.hashSync(pass, 10);
 
   if (mode === 'create') {
-    if (families.find(f => f.familyId === key)) {
+    const { data: existingFamily } = await supabase.from('families').select('family_id').eq('family_id', key).maybeSingle();
+    if (existingFamily) {
       return res.status(409).json({ error: '이미 사용 중인 그룹 키입니다.' });
     }
     const joinKey = generateJoinKey();
-    families.push({
-      familyId: key,
-      joinKey: joinKey,
-      createdBy: id,
-      members: [id],
-      kickDelegates: [],
-      groupName: '',
-      theme: { accent: '#03c75a', bgColor: '#f6f6f7' }
+
+    const { error: uErr } = await supabase.from('users').insert({
+      id, pass: hashedPass, name, family_id: key
     });
-    users.push({ id, pass: hashedPass, name, familyId: key });
-    writeJSON(USERS_FILE, users);
-    writeJSON(FAMILIES_FILE, families);
+    if (uErr) return res.status(500).json({ error: '사용자 등록 실패: ' + uErr.message });
+
+    const { error: fErr } = await supabase.from('families').insert({
+      family_id: key, join_key: joinKey, created_by: id
+    });
+    if (fErr) return res.status(500).json({ error: '그룹 생성 실패: ' + fErr.message });
+
+    const { error: mErr } = await supabase.from('family_members').insert({
+      family_id: key, user_id: id
+    });
+    if (mErr) return res.status(500).json({ error: '멤버 등록 실패: ' + mErr.message });
+
     return res.json({ success: true, message: '회원가입 완료!', familyId: key, joinKey });
   }
 
   if (mode === 'join') {
-    const family = families.find(f => f.joinKey === key);
+    const { data: family } = await supabase.from('families').select('*').eq('join_key', key).maybeSingle();
     if (!family) {
       return res.status(404).json({ error: '존재하지 않는 참여 키입니다.' });
     }
-    if (family.members.includes(id)) {
+    const { data: existingMember } = await supabase.from('family_members').select('user_id').eq('family_id', family.family_id).eq('user_id', id).maybeSingle();
+    if (existingMember) {
       return res.status(409).json({ error: '이미 해당 그룹에 참여 중입니다.' });
     }
-    family.members.push(id);
-    users.push({ id, pass: hashedPass, name, familyId: family.familyId });
-    writeJSON(USERS_FILE, users);
-    writeJSON(FAMILIES_FILE, families);
-    return res.json({ success: true, message: '회원가입 완료!', familyId: family.familyId });
+    const { error: uErr } = await supabase.from('users').insert({ id, pass: hashedPass, name, family_id: family.family_id });
+    if (uErr) return res.status(500).json({ error: '사용자 등록 실패: ' + uErr.message });
+    const { error: mErr } = await supabase.from('family_members').insert({ family_id: family.family_id, user_id: id });
+    if (mErr) return res.status(500).json({ error: '멤버 등록 실패: ' + mErr.message });
+    return res.json({ success: true, message: '회원가입 완료!', familyId: family.family_id });
   }
 
   res.status(400).json({ error: 'mode는 create 또는 join이어야 합니다.' });
 });
 
-app.post('/api/login', (req, res) => {
+app.post('/api/login', async (req, res) => {
   const { id, pass } = req.body;
-  const users = readJSON(USERS_FILE);
-  const user = users.find(u => u.id === id);
+  const { data: user } = await supabase.from('users').select('*').eq('id', id).maybeSingle();
   if (!user || !bcrypt.compareSync(pass, user.pass)) {
     return res.status(401).json({ error: 'ID 또는 비밀번호가 일치하지 않습니다.' });
   }
-  req.session.user = { id: user.id, name: user.name, familyId: user.familyId };
+  req.session.user = { id: user.id, name: user.name, familyId: user.family_id };
   res.json({ success: true, user: req.session.user });
 });
 
@@ -158,205 +163,207 @@ app.get('/api/me', (req, res) => {
   res.json({ user: req.session.user });
 });
 
-app.post('/api/user/change-password', requireAuth, (req, res) => {
+app.post('/api/user/change-password', requireAuth, async (req, res) => {
   const { currentPass, newPass } = req.body;
-  const users = readJSON(USERS_FILE);
-  const user = users.find(u => u.id === req.session.user.id);
+  const { data: user } = await supabase.from('users').select('*').eq('id', req.session.user.id).maybeSingle();
   if (!user || !bcrypt.compareSync(currentPass, user.pass)) {
     return res.status(400).json({ error: '현재 비밀번호가 일치하지 않습니다.' });
   }
-  user.pass = bcrypt.hashSync(newPass, 10);
-  writeJSON(USERS_FILE, users);
+  await supabase.from('users').update({ pass: bcrypt.hashSync(newPass, 10) }).eq('id', req.session.user.id);
   res.json({ success: true, message: '비밀번호가 변경되었습니다.' });
 });
 
-app.post('/api/user/delete', requireAuth, (req, res) => {
+app.post('/api/user/delete', requireAuth, async (req, res) => {
   const userId = req.session.user.id;
-  let users = readJSON(USERS_FILE);
-  let families = readJSON(FAMILIES_FILE);
-  let schedules = readJSON(SCHEDULES_FILE);
-  const myFamily = families.find(f => f.members.includes(userId));
 
-  if (myFamily && myFamily.members.length === 1) {
-    schedules = schedules.filter(s => s.familyId !== myFamily.familyId);
-    families = families.filter(f => f.familyId !== myFamily.familyId);
-  } else if (myFamily) {
-    if (myFamily.createdBy === userId) {
-      return res.status(400).json({ error: '그룹 생성자는 탈퇴할 수 없습니다. 먼저 다른 멤버에게 생성자 권한을 양도하세요.' });
+  const { data: memberInfo } = await supabase.from('family_members').select('family_id').eq('user_id', userId).maybeSingle();
+  if (memberInfo) {
+    const { data: family } = await supabase.from('families').select('*').eq('family_id', memberInfo.family_id).maybeSingle();
+    if (family) {
+      const { count } = await supabase.from('family_members').select('*', { count: 'exact', head: true }).eq('family_id', family.family_id);
+      if (count === 1) {
+        await supabase.from('schedules').delete().eq('family_id', family.family_id);
+        await supabase.from('family_members').delete().eq('family_id', family.family_id);
+        await supabase.from('families').delete().eq('family_id', family.family_id);
+      } else {
+        if (family.created_by === userId) {
+          return res.status(400).json({ error: '그룹 생성자는 탈퇴할 수 없습니다. 먼저 다른 멤버에게 생성자 권한을 양도하세요.' });
+        }
+        await supabase.from('family_members').delete().eq('family_id', family.family_id).eq('user_id', userId);
+      }
     }
-    myFamily.members = myFamily.members.filter(m => m !== userId);
-    if (myFamily.kickDelegates) {
-      myFamily.kickDelegates = myFamily.kickDelegates.filter(d => d !== userId);
-    }
-    schedules = schedules.filter(s => !(s.familyId === myFamily.familyId && s.targetUserId === userId && s.createdBy !== userId));
   }
 
-  users = users.filter(u => u.id !== userId);
-  writeJSON(USERS_FILE, users);
-  writeJSON(FAMILIES_FILE, families);
-  writeJSON(SCHEDULES_FILE, schedules);
+  await supabase.from('users').delete().eq('id', userId);
   req.session.destroy();
   res.json({ success: true });
 });
 
 // ─── FAMILY ─────────────────────────────────────────
 
-app.get('/api/family/members', requireAuth, (req, res) => {
-  const families = readJSON(FAMILIES_FILE);
-  const users = readJSON(USERS_FILE);
-  const family = families.find(f => f.familyId === req.session.user.familyId);
+app.get('/api/family/members', requireAuth, async (req, res) => {
+  const fid = req.session.user.familyId;
+  if (!fid) return res.json({ members: [] });
+
+  const { data: family } = await supabase.from('families').select('*').eq('family_id', fid).maybeSingle();
   if (!family) return res.json({ members: [] });
 
-  const members = family.members.map(mid => {
-    const u = users.find(u => u.id === mid);
-    const canKick = (family.kickDelegates || []).includes(mid);
-    return { id: mid, name: u ? u.name : mid, isCreator: family.createdBy === mid, canKick };
+  const { data: memberRows } = await supabase.from('family_members').select('user_id, can_kick').eq('family_id', fid);
+  const userIds = (memberRows || []).map(m => m.user_id);
+  const { data: users } = userIds.length > 0
+    ? await supabase.from('users').select('id, name').in('id', userIds)
+    : { data: [] };
+
+  const members = (memberRows || []).map(m => {
+    const u = (users || []).find(u => u.id === m.user_id);
+    return {
+      id: m.user_id,
+      name: u ? u.name : m.user_id,
+      isCreator: family.created_by === m.user_id,
+      canKick: m.can_kick
+    };
   });
+
+  const kickDelegates = (memberRows || []).filter(m => m.can_kick).map(m => m.user_id);
+
   res.json({
     members,
-    familyId: family.familyId,
-    joinKey: family.joinKey,
-    createdBy: family.createdBy,
-    kickDelegates: family.kickDelegates || [],
-    groupName: family.groupName || '',
-    theme: family.theme || { accent: '#03c75a', bgColor: '#f6f6f7' }
+    familyId: family.family_id,
+    joinKey: family.join_key,
+    createdBy: family.created_by,
+    kickDelegates,
+    groupName: family.group_name || '',
+    theme: { accent: family.theme_accent || '#03c75a', bgColor: family.theme_bg_color || '#f6f6f7' }
   });
 });
 
-app.post('/api/family/leave', requireAuth, (req, res) => {
+app.post('/api/family/leave', requireAuth, async (req, res) => {
   const userId = req.session.user.id;
-  let families = readJSON(FAMILIES_FILE);
-  let schedules = readJSON(SCHEDULES_FILE);
-  const family = families.find(f => f.members.includes(userId));
-  if (!family) return res.status(404).json({ error: '소속된 그룹이 없습니다.' });
+  const fid = req.session.user.familyId;
+  if (!fid) return res.status(404).json({ error: '소속된 그룹이 없습니다.' });
 
-  if (family.createdBy === userId) {
+  const { data: family } = await supabase.from('families').select('*').eq('family_id', fid).maybeSingle();
+  if (!family) return res.status(404).json({ error: '그룹이 없습니다.' });
+  if (family.created_by === userId) {
     return res.status(400).json({ error: '그룹 생성자는 탈퇴할 수 없습니다.' });
   }
 
-  family.members = family.members.filter(m => m !== userId);
-  if (family.kickDelegates) {
-    family.kickDelegates = family.kickDelegates.filter(d => d !== userId);
-  }
-  writeJSON(FAMILIES_FILE, families);
-  writeJSON(SCHEDULES_FILE, schedules);
-
-  let users = readJSON(USERS_FILE);
-  const user = users.find(u => u.id === userId);
-  if (user) {
-    user.familyId = null;
-    writeJSON(USERS_FILE, users);
-  }
+  await supabase.from('family_members').delete().eq('family_id', fid).eq('user_id', userId);
+  await supabase.from('users').update({ family_id: null }).eq('id', userId);
   req.session.user.familyId = null;
   res.json({ success: true });
 });
 
-app.post('/api/family/kick', requireAuth, (req, res) => {
+app.post('/api/family/kick', requireAuth, async (req, res) => {
   const { targetId } = req.body;
-  let families = readJSON(FAMILIES_FILE);
-  const family = families.find(f => f.familyId === req.session.user.familyId);
-  if (!family) return res.status(404).json({ error: '그룹이 없습니다.' });
   const userId = req.session.user.id;
-  const kickDelegates = family.kickDelegates || [];
-  if (family.createdBy !== userId && !kickDelegates.includes(userId)) {
-    return res.status(403).json({ error: '추방 권한이 없습니다.' });
-  }
-  if (!family.members.includes(targetId)) {
-    return res.status(404).json({ error: '대상 멤버를 찾을 수 없습니다.' });
-  }
-  if (targetId === userId) {
-    return res.status(400).json({ error: '자기 자신을 추방할 수 없습니다.' });
-  }
-  if (family.createdBy === targetId) {
-    return res.status(400).json({ error: '그룹장은 추방할 수 없습니다.' });
-  }
-  if (userId !== family.createdBy && kickDelegates.includes(userId) && kickDelegates.includes(targetId)) {
+  const fid = req.session.user.familyId;
+  if (!fid) return res.status(404).json({ error: '그룹이 없습니다.' });
+
+  const { data: family } = await supabase.from('families').select('*').eq('family_id', fid).maybeSingle();
+  if (!family) return res.status(404).json({ error: '그룹이 없습니다.' });
+
+  const { data: me } = await supabase.from('family_members').select('can_kick').eq('family_id', fid).eq('user_id', userId).maybeSingle();
+  const canKick = family.created_by === userId || (me && me.can_kick);
+  if (!canKick) return res.status(403).json({ error: '추방 권한이 없습니다.' });
+
+  if (targetId === userId) return res.status(400).json({ error: '자기 자신을 추방할 수 없습니다.' });
+  if (family.created_by === targetId) return res.status(400).json({ error: '그룹장은 추방할 수 없습니다.' });
+
+  const { data: targetMember } = await supabase.from('family_members').select('can_kick').eq('family_id', fid).eq('user_id', targetId).maybeSingle();
+  if (!targetMember) return res.status(404).json({ error: '대상 멤버를 찾을 수 없습니다.' });
+
+  if (userId !== family.created_by && me && me.can_kick && targetMember.can_kick) {
     return res.status(400).json({ error: '추방 권한이 있는 멤버를 추방할 수 없습니다. 그룹장에게 요청하세요.' });
   }
 
-  family.members = family.members.filter(m => m !== targetId);
-  if (kickDelegates.includes(targetId)) {
-    family.kickDelegates = kickDelegates.filter(d => d !== targetId);
-  }
-  writeJSON(FAMILIES_FILE, families);
-
-  let users = readJSON(USERS_FILE);
-  const targetUser = users.find(u => u.id === targetId);
-  if (targetUser) {
-    targetUser.familyId = null;
-    writeJSON(USERS_FILE, users);
-  }
+  await supabase.from('family_members').delete().eq('family_id', fid).eq('user_id', targetId);
+  await supabase.from('users').update({ family_id: null }).eq('id', targetId);
   res.json({ success: true, message: '추방 완료' });
 });
 
-app.put('/api/family/delegate-kick', requireAuth, (req, res) => {
+app.put('/api/family/delegate-kick', requireAuth, async (req, res) => {
   const { targetId } = req.body;
-  let families = readJSON(FAMILIES_FILE);
-  const family = families.find(f => f.familyId === req.session.user.familyId);
+  const fid = req.session.user.familyId;
+  if (!fid) return res.status(404).json({ error: '그룹이 없습니다.' });
+
+  const { data: family } = await supabase.from('families').select('*').eq('family_id', fid).maybeSingle();
   if (!family) return res.status(404).json({ error: '그룹이 없습니다.' });
-  if (family.createdBy !== req.session.user.id) {
+  if (family.created_by !== req.session.user.id) {
     return res.status(403).json({ error: '그룹장만 권한을 위임할 수 있습니다.' });
   }
-  if (!family.members.includes(targetId)) {
-    return res.status(404).json({ error: '대상 멤버를 찾을 수 없습니다.' });
-  }
-  if (!family.kickDelegates) family.kickDelegates = [];
-  const idx = family.kickDelegates.indexOf(targetId);
-  if (idx >= 0) {
-    family.kickDelegates.splice(idx, 1);
-  } else {
-    family.kickDelegates.push(targetId);
-  }
-  writeJSON(FAMILIES_FILE, families);
-  res.json({ success: true, kickDelegates: family.kickDelegates, active: idx < 0 });
+
+  const { data: member } = await supabase.from('family_members').select('*').eq('family_id', fid).eq('user_id', targetId).maybeSingle();
+  if (!member) return res.status(404).json({ error: '대상 멤버를 찾을 수 없습니다.' });
+
+  const newCanKick = !member.can_kick;
+  await supabase.from('family_members').update({ can_kick: newCanKick }).eq('family_id', fid).eq('user_id', targetId);
+
+  const { data: delegates } = await supabase.from('family_members').select('user_id').eq('family_id', fid).eq('can_kick', true);
+  res.json({ success: true, kickDelegates: (delegates || []).map(d => d.user_id), active: newCanKick });
 });
 
 // ─── SETTINGS ─────────────────────────────────────
 
-app.get('/api/family/settings', requireAuth, (req, res) => {
-  const families = readJSON(FAMILIES_FILE);
-  const family = families.find(f => f.familyId === req.session.user.familyId);
+app.get('/api/family/settings', requireAuth, async (req, res) => {
+  const fid = req.session.user.familyId;
+  if (!fid) return res.json({ groupName: '', theme: { accent: '#03c75a', bgColor: '#f6f6f7' } });
+  const { data: family } = await supabase.from('families').select('*').eq('family_id', fid).maybeSingle();
   if (!family) return res.json({ groupName: '', theme: { accent: '#03c75a', bgColor: '#f6f6f7' } });
   res.json({
-    groupName: family.groupName || '',
-    theme: family.theme || { accent: '#03c75a', bgColor: '#f6f6f7' },
-    isCreator: family.createdBy === req.session.user.id
+    groupName: family.group_name || '',
+    theme: { accent: family.theme_accent || '#03c75a', bgColor: family.theme_bg_color || '#f6f6f7' },
+    isCreator: family.created_by === req.session.user.id
   });
 });
 
-app.put('/api/family/settings', requireAuth, (req, res) => {
-  let families = readJSON(FAMILIES_FILE);
-  const family = families.find(f => f.familyId === req.session.user.familyId);
+app.put('/api/family/settings', requireAuth, async (req, res) => {
+  const fid = req.session.user.familyId;
+  if (!fid) return res.status(404).json({ error: '그룹이 없습니다.' });
+
+  const { data: family } = await supabase.from('families').select('*').eq('family_id', fid).maybeSingle();
   if (!family) return res.status(404).json({ error: '그룹이 없습니다.' });
-  if (family.createdBy !== req.session.user.id) {
+  if (family.created_by !== req.session.user.id) {
     return res.status(403).json({ error: '그룹장만 설정을 변경할 수 있습니다.' });
   }
+
+  const updates = {};
   const { groupName, theme } = req.body;
-  if (groupName !== undefined) family.groupName = String(groupName).slice(0, 30);
+  if (groupName !== undefined) updates.group_name = String(groupName).slice(0, 30);
   if (theme) {
-    if (!family.theme) family.theme = { accent: '#03c75a', bgColor: '#f6f6f7' };
-    if (theme.accent && /^#[0-9a-fA-F]{6}$/.test(theme.accent)) family.theme.accent = theme.accent;
-    if (theme.bgColor && /^#[0-9a-fA-F]{6}$/.test(theme.bgColor)) family.theme.bgColor = theme.bgColor;
+    if (theme.accent && /^#[0-9a-fA-F]{6}$/.test(theme.accent)) updates.theme_accent = theme.accent;
+    if (theme.bgColor && /^#[0-9a-fA-F]{6}$/.test(theme.bgColor)) updates.theme_bg_color = theme.bgColor;
   }
-  writeJSON(FAMILIES_FILE, families);
-  res.json({ success: true, groupName: family.groupName, theme: family.theme });
+
+  if (Object.keys(updates).length > 0) {
+    await supabase.from('families').update(updates).eq('family_id', fid);
+  }
+
+  const { data: updated } = await supabase.from('families').select('*').eq('family_id', fid).maybeSingle();
+  res.json({
+    success: true,
+    groupName: updated.group_name || '',
+    theme: { accent: updated.theme_accent || '#03c75a', bgColor: updated.theme_bg_color || '#f6f6f7' }
+  });
 });
 
 // ─── SCHEDULES ──────────────────────────────────────
 
-app.get('/api/schedules', requireAuth, (req, res) => {
+app.get('/api/schedules', requireAuth, async (req, res) => {
   const { view, date, userId } = req.query;
-  const schedules = readJSON(SCHEDULES_FILE).filter(s => s.familyId === req.session.user.familyId);
+  const fid = req.session.user.familyId;
+  if (!fid) return res.json({ schedules: [] });
 
-  let filtered = schedules;
-  if (userId) {
-    filtered = filtered.filter(s => s.targetUserId === userId);
-  }
+  let query = supabase.from('schedules').select('*').eq('family_id', fid);
+  if (userId) query = query.eq('target_user_id', userId);
+
+  const { data: schedules } = await query;
+  let filtered = schedules || [];
 
   if (view && date) {
     const targetDate = new Date(date);
     filtered = filtered.filter(s => {
-      const sDate = new Date(s.date);
+      const sDate = new Date(s.scheduled_date + 'T00:00:00');
       switch (view) {
         case 'day': return sDate.toDateString() === targetDate.toDateString();
         case 'week': {
@@ -375,88 +382,77 @@ app.get('/api/schedules', requireAuth, (req, res) => {
     });
   }
 
-  res.json({ schedules: filtered });
+  res.json({ schedules: filtered.map(mapSchedule) });
 });
 
-app.get('/api/schedules/today', requireAuth, (req, res) => {
-  const today = new Date().toDateString();
-  const schedules = readJSON(SCHEDULES_FILE).filter(s =>
-    s.familyId === req.session.user.familyId &&
-    new Date(s.date).toDateString() === today
-  );
-  res.json({ today: schedules, count: schedules.length });
+app.get('/api/schedules/today', requireAuth, async (req, res) => {
+  const fid = req.session.user.familyId;
+  if (!fid) return res.json({ today: [], count: 0 });
+  const today = new Date().toISOString().split('T')[0];
+  const { data } = await supabase.from('schedules').select('*').eq('family_id', fid).eq('scheduled_date', today);
+  res.json({ today: (data || []).map(mapSchedule), count: (data || []).length });
 });
 
-app.get('/api/schedules/search', requireAuth, (req, res) => {
+app.get('/api/schedules/search', requireAuth, async (req, res) => {
   const { q, userId: filterUserId, dateFrom, dateTo, status } = req.query;
-  let schedules = readJSON(SCHEDULES_FILE).filter(s => s.familyId === req.session.user.familyId);
+  const fid = req.session.user.familyId;
+  if (!fid) return res.json({ schedules: [] });
 
-  if (q) {
-    const keyword = q.toLowerCase();
-    schedules = schedules.filter(s =>
-      s.title.toLowerCase().includes(keyword) ||
-      s.requester.toLowerCase().includes(keyword) ||
-      s.duration.toLowerCase().includes(keyword)
-    );
-  }
-  if (filterUserId) {
-    schedules = schedules.filter(s => s.targetUserId === filterUserId);
-  }
-  if (dateFrom) {
-    schedules = schedules.filter(s => s.date >= dateFrom);
-  }
-  if (dateTo) {
-    schedules = schedules.filter(s => s.date <= dateTo);
-  }
+  let query = supabase.from('schedules').select('*').eq('family_id', fid);
+  if (filterUserId) query = query.eq('target_user_id', filterUserId);
+  if (dateFrom) query = query.gte('scheduled_date', dateFrom);
+  if (dateTo) query = query.lte('scheduled_date', dateTo);
+  if (q) query = query.or(`title.ilike.%${q}%,requester.ilike.%${q}%,duration.ilike.%${q}%`);
+
+  const { data: schedules } = await query;
+  let filtered = schedules || [];
+
   if (status) {
-    schedules = schedules.filter(s => status === 'completed' ? s.completed : !s.completed);
+    filtered = filtered.filter(s => status === 'completed' ? s.completed : !s.completed);
   }
 
-  res.json({ schedules });
+  res.json({ schedules: filtered.map(mapSchedule) });
 });
 
-app.post('/api/schedules', requireAuth, (req, res) => {
+app.post('/api/schedules', requireAuth, async (req, res) => {
   const { title, targetUserId, requester, duration, date, time, progress, completed, isRecurring, recurringType, recurringEndDate } = req.body;
   if (!title || !date) {
     return res.status(400).json({ error: '일정명과 날짜는 필수입니다.' });
   }
 
-  const families = readJSON(FAMILIES_FILE);
-  const family = families.find(f => f.familyId === req.session.user.familyId);
+  const fid = req.session.user.familyId;
   const target = targetUserId || req.session.user.id;
-  if (!family || !family.members.includes(target)) {
+  const { data: member } = await supabase.from('family_members').select('user_id').eq('family_id', fid).eq('user_id', target).maybeSingle();
+  if (!member) {
     return res.status(400).json({ error: '유효하지 않은 대상자입니다.' });
   }
 
-  function createSchedule(baseDate) {
+  function buildSchedule(baseDate) {
     return {
-      scheduleId: uuidv4(),
-      familyId: req.session.user.familyId,
+      schedule_id: uuidv4(),
+      family_id: fid,
       title,
       requester: requester || req.session.user.name,
-      targetUserId: target,
+      target_user_id: target,
       duration: duration || '',
-      date: baseDate,
-      time: time || '',
+      scheduled_date: baseDate,
+      scheduled_time: time || '',
       progress: progress || 0,
       completed: completed || false,
-      isRecurring: isRecurring || false,
-      recurringType: recurringType || null,
-      recurringEndDate: recurringEndDate || null,
-      createdBy: req.session.user.id,
-      createdAt: new Date().toISOString()
+      is_recurring: isRecurring || false,
+      recurring_type: recurringType || null,
+      recurring_end_date: recurringEndDate || null,
+      created_by: req.session.user.id
     };
   }
 
-  const schedules = readJSON(SCHEDULES_FILE);
-  const newSchedules = [];
-
+  const rows = [];
   if (isRecurring && recurringType && recurringEndDate) {
     const startDate = new Date(date);
     const endDate = new Date(recurringEndDate);
     let currentDate = new Date(startDate);
     while (currentDate <= endDate) {
-      newSchedules.push(createSchedule(currentDate.toISOString().split('T')[0]));
+      rows.push(buildSchedule(currentDate.toISOString().split('T')[0]));
       switch (recurringType) {
         case 'daily': currentDate.setDate(currentDate.getDate() + 1); break;
         case 'weekly': currentDate.setDate(currentDate.getDate() + 7); break;
@@ -466,130 +462,143 @@ app.post('/api/schedules', requireAuth, (req, res) => {
       }
     }
   } else {
-    newSchedules.push(createSchedule(date));
+    rows.push(buildSchedule(date));
   }
 
-  schedules.push(...newSchedules);
-  writeJSON(SCHEDULES_FILE, schedules);
-  res.json({ success: true, schedules: newSchedules });
+  const { error } = await supabase.from('schedules').insert(rows);
+  if (error) return res.status(500).json({ error: '일정 저장 실패' });
+  res.json({ success: true, schedules: rows.map(mapSchedule) });
 });
 
-app.put('/api/schedules/:id', requireAuth, (req, res) => {
-  const schedules = readJSON(SCHEDULES_FILE);
-  const idx = schedules.findIndex(s => s.scheduleId === req.params.id);
-  if (idx === -1) return res.status(404).json({ error: '일정을 찾을 수 없습니다.' });
+app.put('/api/schedules/:id', requireAuth, async (req, res) => {
+  const { data: schedule } = await supabase.from('schedules').select('*').eq('schedule_id', req.params.id).maybeSingle();
+  if (!schedule) return res.status(404).json({ error: '일정을 찾을 수 없습니다.' });
 
-  const schedule = schedules[idx];
-  if (schedule.createdBy !== req.session.user.id && schedule.targetUserId !== req.session.user.id) {
+  if (schedule.created_by !== req.session.user.id && schedule.target_user_id !== req.session.user.id) {
     return res.status(403).json({ error: '수정 권한이 없습니다.' });
   }
 
+  const updates = {};
   const { title, targetUserId, requester, duration, date, time, progress, completed } = req.body;
-  if (title !== undefined) schedule.title = title;
-  if (targetUserId !== undefined) schedule.targetUserId = targetUserId;
-  if (requester !== undefined) schedule.requester = requester;
-  if (duration !== undefined) schedule.duration = duration;
-  if (date !== undefined) schedule.date = date;
-  if (time !== undefined) schedule.time = time;
-  if (progress !== undefined) schedule.progress = progress;
-  if (completed !== undefined) schedule.completed = completed;
+  if (title !== undefined) updates.title = title;
+  if (targetUserId !== undefined) updates.target_user_id = targetUserId;
+  if (requester !== undefined) updates.requester = requester;
+  if (duration !== undefined) updates.duration = duration;
+  if (date !== undefined) updates.scheduled_date = date;
+  if (time !== undefined) updates.scheduled_time = time;
+  if (progress !== undefined) updates.progress = progress;
+  if (completed !== undefined) updates.completed = completed;
 
-  schedules[idx] = schedule;
-  writeJSON(SCHEDULES_FILE, schedules);
-  res.json({ success: true, schedule });
+  const { data: updated } = await supabase.from('schedules').update(updates).eq('schedule_id', req.params.id).select('*').single();
+  res.json({ success: true, schedule: updated ? mapSchedule(updated) : null });
 });
 
-app.delete('/api/schedules/:id', requireAuth, (req, res) => {
-  let schedules = readJSON(SCHEDULES_FILE);
-  const schedule = schedules.find(s => s.scheduleId === req.params.id);
+app.delete('/api/schedules/:id', requireAuth, async (req, res) => {
+  const { data: schedule } = await supabase.from('schedules').select('*').eq('schedule_id', req.params.id).maybeSingle();
   if (!schedule) return res.status(404).json({ error: '일정을 찾을 수 없습니다.' });
-  if (schedule.createdBy !== req.session.user.id) {
+  if (schedule.created_by !== req.session.user.id) {
     return res.status(403).json({ error: '삭제는 작성자만 가능합니다.' });
   }
-  schedules = schedules.filter(s => s.scheduleId !== req.params.id);
-  writeJSON(SCHEDULES_FILE, schedules);
+  await supabase.from('schedules').delete().eq('schedule_id', req.params.id);
   res.json({ success: true });
 });
 
 // ─── DATA MANAGEMENT ──────────────────────────────
 
-app.post('/api/schedules/reset', requireAuth, (req, res) => {
-  const families = readJSON(FAMILIES_FILE);
-  const family = families.find(f => f.familyId === req.session.user.familyId);
-  if (!family) return res.status(404).json({ error: '그룹이 없습니다.' });
-  if (family.createdBy !== req.session.user.id) {
+app.post('/api/schedules/reset', requireAuth, async (req, res) => {
+  const fid = req.session.user.familyId;
+  if (!fid) return res.status(404).json({ error: '그룹이 없습니다.' });
+  const { data: family } = await supabase.from('families').select('created_by').eq('family_id', fid).maybeSingle();
+  if (!family || family.created_by !== req.session.user.id) {
     return res.status(403).json({ error: '그룹장만 초기화할 수 있습니다.' });
   }
-  let schedules = readJSON(SCHEDULES_FILE);
-  schedules = schedules.filter(s => s.familyId !== req.session.user.familyId);
-  writeJSON(SCHEDULES_FILE, schedules);
+  await supabase.from('schedules').delete().eq('family_id', fid);
   res.json({ success: true, message: '모든 일정이 초기화되었습니다.' });
 });
 
-app.get('/api/schedules/export', requireAuth, (req, res) => {
-  const schedules = readJSON(SCHEDULES_FILE).filter(s => s.familyId === req.session.user.familyId);
+app.get('/api/schedules/export', requireAuth, async (req, res) => {
+  const fid = req.session.user.familyId;
+  if (!fid) return res.json({ schedules: [] });
+  const { data: schedules } = await supabase.from('schedules').select('*').eq('family_id', fid);
   const exportData = {
     exportedAt: new Date().toISOString(),
-    familyId: req.session.user.familyId,
-    schedules
+    familyId: fid,
+    schedules: (schedules || []).map(s => ({
+      scheduleId: s.schedule_id,
+      familyId: s.family_id,
+      title: s.title,
+      requester: s.requester,
+      targetUserId: s.target_user_id,
+      duration: s.duration,
+      date: s.scheduled_date,
+      time: s.scheduled_time,
+      progress: s.progress,
+      completed: s.completed,
+      isRecurring: s.is_recurring,
+      recurringType: s.recurring_type,
+      recurringEndDate: s.recurring_end_date,
+      createdBy: s.created_by
+    }))
   };
   res.setHeader('Content-Disposition', 'attachment; filename=familyplans_backup.json');
   res.setHeader('Content-Type', 'application/json');
   res.json(exportData);
 });
 
-app.post('/api/schedules/import', requireAuth, (req, res) => {
-  const families = readJSON(FAMILIES_FILE);
-  const family = families.find(f => f.familyId === req.session.user.familyId);
-  if (!family) return res.status(404).json({ error: '그룹이 없습니다.' });
-  if (family.createdBy !== req.session.user.id) {
+app.post('/api/schedules/import', requireAuth, async (req, res) => {
+  const fid = req.session.user.familyId;
+  if (!fid) return res.status(404).json({ error: '그룹이 없습니다.' });
+  const { data: family } = await supabase.from('families').select('created_by').eq('family_id', fid).maybeSingle();
+  if (!family || family.created_by !== req.session.user.id) {
     return res.status(403).json({ error: '그룹장만 가져오기할 수 있습니다.' });
   }
   const { schedules: importSchedules } = req.body;
   if (!Array.isArray(importSchedules)) {
     return res.status(400).json({ error: '올바른 일정 데이터가 아닙니다.' });
   }
-  const existingSchedules = readJSON(SCHEDULES_FILE).filter(s => s.familyId !== req.session.user.familyId);
-  const newSchedules = importSchedules.map(s => ({
-    scheduleId: uuidv4(),
-    familyId: req.session.user.familyId,
+  const rows = importSchedules.map(s => ({
+    schedule_id: uuidv4(),
+    family_id: fid,
     title: s.title || '',
     requester: s.requester || '',
-    targetUserId: s.targetUserId || req.session.user.id,
+    target_user_id: s.targetUserId || req.session.user.id,
     duration: s.duration || '',
-    date: s.date || '',
-    time: s.time || '',
+    scheduled_date: s.date || '',
+    scheduled_time: s.time || '',
     progress: s.progress || 0,
     completed: s.completed || false,
-    isRecurring: s.isRecurring || false,
-    recurringType: s.recurringType || null,
-    recurringEndDate: s.recurringEndDate || null,
-    createdBy: req.session.user.id,
-    createdAt: new Date().toISOString()
+    is_recurring: s.isRecurring || false,
+    recurring_type: s.recurringType || null,
+    recurring_end_date: s.recurringEndDate || null,
+    created_by: req.session.user.id
   }));
-  existingSchedules.push(...newSchedules);
-  writeJSON(SCHEDULES_FILE, existingSchedules);
-  res.json({ success: true, count: newSchedules.length, message: `${newSchedules.length}건의 일정을 가져왔습니다.` });
+  const { error } = await supabase.from('schedules').insert(rows);
+  if (error) return res.status(500).json({ error: '가져오기 실패' });
+  res.json({ success: true, count: rows.length, message: `${rows.length}건의 일정을 가져왔습니다.` });
 });
 
-app.get('/api/stats/progress', requireAuth, (req, res) => {
-  const schedules = readJSON(SCHEDULES_FILE).filter(s => s.familyId === req.session.user.familyId);
-  const families = readJSON(FAMILIES_FILE);
-  const users = readJSON(USERS_FILE);
-  const family = families.find(f => f.familyId === req.session.user.familyId);
-  if (!family) return res.json({ stats: [] });
+app.get('/api/stats/progress', requireAuth, async (req, res) => {
+  const fid = req.session.user.familyId;
+  if (!fid) return res.json({ stats: [] });
 
-  const stats = family.members.map(mid => {
-    const user = users.find(u => u.id === mid);
-    const userSchedules = schedules.filter(s => s.targetUserId === mid);
+  const { data: memberRows } = await supabase.from('family_members').select('user_id').eq('family_id', fid);
+  if (!memberRows || memberRows.length === 0) return res.json({ stats: [] });
+
+  const userIds = memberRows.map(m => m.user_id);
+  const { data: users } = await supabase.from('users').select('id, name').in('id', userIds);
+  const { data: schedules } = await supabase.from('schedules').select('*').eq('family_id', fid);
+
+  const stats = memberRows.map(m => {
+    const user = (users || []).find(u => u.id === m.user_id);
+    const userSchedules = (schedules || []).filter(s => s.target_user_id === m.user_id);
     const completedCount = userSchedules.filter(s => s.completed).length;
     const totalCount = userSchedules.length;
     const avgProgress = totalCount > 0
       ? Math.round(userSchedules.reduce((sum, s) => sum + s.progress, 0) / totalCount)
       : 0;
     return {
-      userId: mid,
-      name: user ? user.name : mid,
+      userId: m.user_id,
+      name: user ? user.name : m.user_id,
       total: totalCount,
       completed: completedCount,
       averageProgress: avgProgress
@@ -598,6 +607,8 @@ app.get('/api/stats/progress', requireAuth, (req, res) => {
 
   res.json({ stats });
 });
+
+// ─── FALLBACK ──────────────────────────────────────
 
 app.use((req, res) => {
   const pageRoute = pageRoutes[req.path];
